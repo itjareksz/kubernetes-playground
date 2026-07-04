@@ -1,0 +1,144 @@
+# IMPORTANT: In production don't put secrets in the file that will go to Git repository. Create them in separate file.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mariadb-root-password
+type: Opaque
+data:
+  root-password: YWRtaW4xMjMh # echo -n admin123! | base64
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-cfg
+data:
+  mariadb.cnf: |
+    max_allowed_packet = 20M
+    innodb_buffer_pool_size = 2356M
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner # setting for local storage
+volumeBindingMode: WaitForFirstConsumer # setting for local storage
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-host-volume
+  labels:
+    type: local
+spec:
+  storageClassName: local-storage
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/data/local-storage/mariadb"
+    type:
+      # Create an empty directory at that location with permissions set to 0755,
+      # created directory inherits the same group and ownership as the Kubelet process.
+      DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-storage
+spec:
+  volumeName: local-host-volume
+  storageClassName: local-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb
+  labels:
+    app: mariadb
+    role: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb
+      role: database
+  template:
+    metadata:
+      labels:
+        app: mariadb
+        role: database
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11.8.8
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-root-password
+                  key: root-password
+          volumeMounts:
+            - name: vol-db-cfg
+              mountPath: /etc/mysql/conf.d/
+            - name: db-storage
+              mountPath: /var/lib/mysql
+          ports:
+            - containerPort: 3306
+      volumes:
+        - name: vol-db-cfg
+          configMap:
+            name: db-cfg
+        - name: db-storage
+          persistentVolumeClaim:
+            claimName: db-storage
+      nodeSelector:
+        # Pod selects nodes where 'topology.kubernetes.io/zone' label exists with specific value
+        topology.kubernetes.io/zone: eu-east-1a
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+spec:
+  selector:
+    app: mariadb
+    role: database
+  # ------------------------------------
+  # # ClusterIP means this service can be accessed by any pod in the cluster
+  # type: ClusterIP
+  # ports:
+  # - name: mariadb
+  #   port: 23306
+  #   targetPort: 3306  # should match containerPort in Deployment
+  #   protocol: TCP  # optional protocol
+  # ------------------------------------
+  # # NodePort is available from outside, ports are open on every node, don't use in production, use LoadBalancer instead
+  # type: NodePort
+  # ports:
+  # - name: mariadb
+  #   port: 23306
+  #   targetPort: 3306  # should match containerPort in Deployment
+  #   protocol: TCP  # optional protocol
+  #   nodePort: 30001  # port number accessible from outside, must be between 30000-32767
+  # ------------------------------------
+  # # LoadBalancer should be used with cloud provider which support external load balancers and is available from outside
+  # # For local testing use MetalLB as LoadBalancer
+  type: LoadBalancer
+  ports:
+    - name: mariadb
+      port: 23306
+      targetPort: 3306 # should match containerPort in Deployment
+      protocol: TCP # optional protocol
