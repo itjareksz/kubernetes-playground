@@ -1,0 +1,66 @@
+# ================================================================================================
+# Create CronJob that prints every 5 minutes to stdout list of Pods from namespace 'kube-system'.
+# Add permissions to allow only listing of Pods by Pod used in CronJob.
+# ================================================================================================
+
+# ServiceAccount is a namespaced resource in Kubernetes,
+# meaning that it can only be referenced from Pods deployed in the same namespace.
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: pod-lister
+  namespace: kube-system # should match the namespace where the resources to be accessed are located
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-lister
+  namespace: kube-system # should match the namespace where the resources to be accessed are located
+rules:
+  - apiGroups:
+      - "" # "" indicates the core API group
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pod-lister
+  namespace: kube-system # should match the namespace where the resources to be accessed are located
+subjects:
+  - kind: ServiceAccount
+    name: pod-lister
+roleRef:
+  kind: Role
+  name: pod-lister
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kubectl-pod-lister
+  namespace: kube-system # should match the namespace where the resources to be accessed are located
+spec:
+  schedule: "*/5 * * * *" # every 5 minues
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 100 # pod is eligible to be automatically deleted
+      template:
+        spec:
+          serviceAccountName: pod-lister
+          containers:
+            - name: kubectl
+              image: bitnami/kubectl:latest # entrypoint for this image is command: kubectl
+              args:
+                - -n
+                - kube-system
+                - get
+                - pods
+              resources:
+                limits:
+                  memory: 128Mi
+                  cpu: 500m
+          restartPolicy: Never
