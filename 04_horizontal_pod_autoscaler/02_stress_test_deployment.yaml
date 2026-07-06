@@ -1,0 +1,36 @@
+# Pod from this deployment generates heavy network traffic to apache Pod created earlier.
+# Handling such traffic will require lots of CPU resources from apache Pod.
+# This should trigger autoscaling of apache Pod replicas.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hpa
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: busybox
+  namespace: hpa
+spec:
+  selector:
+    matchLabels:
+      app: busybox
+  template:
+    metadata:
+      labels:
+        app: busybox
+    spec:
+      containers:
+        - name: busybox
+          image: busybox:1.28
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 100m
+            limits:
+              memory: 128Mi
+              cpu: 300m
+          command:
+            - "/bin/sh"
+            - "-c"
+            - "while sleep 0.01; do wget -q -O- http://php-apache.hpa.svc; done"
