@@ -1,0 +1,150 @@
+# IMPORTANT: In production don't put secrets in the file that will go to Git repository. Create them in separate file.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bookstack-secrets
+  namespace: default
+type: Opaque
+stringData: # stringData allow to provide clear text content, it will be automatically encoded to base64
+  # app-key: Bookstack application generated APP_KEY, should include string 'base64:' as part of the value.
+  # To generate app-key use command:
+  # kubectl run temp-bookstack --image=lscr.io/linuxserver/bookstack:latest --restart=Never --command -- /bin/bash -c "appkey"
+  app-key: base64:xxxxxxxxxx
+---
+# PersistentVolume (PV) cannot be bound to multiple PersistentVolumeClaims (PVCs) at the same time.
+# Each PV is an atomic resource and can only be claimed by one PVC,
+# although multiple PVs can be created to share the same underlying storage if the storage driver allows it.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: bookstack-local-volume
+  labels:
+    type: local
+spec:
+  storageClassName: local-storage # from 01_mariadb.yaml deployment
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/data/local-storage/bookstack"
+    # Create an empty directory at that location with permissions set to 0755,
+    # created directory inherits the same group and ownership as the Kubelet process.
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bookstack-pvc
+spec:
+  volumeName: bookstack-local-volume # bind to a specific PersistentVolume
+  storageClassName: local-storage # from 01_mariadb.yaml deployment
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bookstack
+  namespace: default
+  labels:
+    app: bookstack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bookstack
+  template:
+    metadata:
+      labels:
+        app: bookstack
+    spec:
+      containers:
+        - name: bookstack
+          image: lscr.io/linuxserver/bookstack:25.12.7
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 128Mi
+              cpu: 500m
+          ports:
+            - containerPort: 80
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "1000"
+            - name: TZ
+              value: Etc/UTC
+            - name: APP_URL
+              # Add IP address and domain to /etc/hosts
+              # e.g.:
+              # /etc/hosts
+              # (...)
+              # 172.18.255.201 bookstack.hands-on.k8s # IP address read using: kubectl get service -owide
+              value: http://bookstack.hands-on.k8s:6875
+            - name: APP_KEY # Secret
+              valueFrom:
+                secretKeyRef:
+                  name: bookstack-secrets
+                  key: app-key
+            - name: DB_HOST
+              value: bookstack-mariadb-0.bookstack-mariadb # such name because bookstack-mariadb is a StatefulSet
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_USERNAME
+              value: bookstack-user
+            - name: DB_PASSWORD # Secret
+              valueFrom:
+                secretKeyRef:
+                  name: bookstack-secrets
+                  key: mariadb-user-password
+            - name: DB_DATABASE
+              value: bookstackdb
+          volumeMounts:
+            - name: bookstack-config
+              mountPath: /config # path inside container
+      volumes:
+        - name: bookstack-config
+          persistentVolumeClaim:
+            claimName: bookstack-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bookstack
+  namespace: default
+spec:
+  selector:
+    app: bookstack
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 6875
+      targetPort: 80 # should match containerPort in Deployment
+---
+# kind have built in Ingress controller: cloud-provider-kind (since version 0.9.0)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bookstack
+  namespace: default
+spec:
+  rules:
+    # Map the domain name to the Kubernetes node IP address that serves as your entrypoint, using a DNS server for testing.
+    # Domain name can be entered in /etc/hosts.
+    - host: bookstack.hands-on.k8s
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bookstack # reference to created Service
+                port:
+                  number: 6875 # Service port number

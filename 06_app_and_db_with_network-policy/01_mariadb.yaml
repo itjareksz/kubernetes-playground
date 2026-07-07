@@ -1,0 +1,124 @@
+# IMPORTANT: In production don't put secrets in the file that will go to Git repository. Create them in separate file.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bookstack-secrets
+  namespace: default
+type: Opaque
+stringData: # stringData allow to provide clear text content, it will be automatically encoded to base64
+  mariadb-user-password: your-db-user-password
+  mariadb-root-password: your-db-root-password
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner # setting for local storage
+volumeBindingMode: WaitForFirstConsumer # setting for local storage
+---
+# PersistentVolume (PV) cannot be bound to multiple PersistentVolumeClaims (PVCs) at the same time.
+# Each PV is an atomic resource and can only be claimed by one PVC,
+# although multiple PVs can be created to share the same underlying storage if the storage driver allows it.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: bookstack-mariadb-local-volume
+  labels:
+    type: local
+spec:
+  storageClassName: local-storage
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/data/local-storage/bookstack-mariadb"
+    # Create an empty directory at that location with permissions set to 0755,
+    # created directory inherits the same group and ownership as the Kubelet process.
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bookstack-mariadb-pvc
+spec:
+  volumeName: bookstack-mariadb-local-volume # bind to a specific PersistentVolume
+  storageClassName: local-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: bookstack-mariadb
+  namespace: default
+  labels:
+    app: bookstack-mariadb
+spec:
+  serviceName: bookstack-mariadb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bookstack-mariadb
+  template:
+    metadata:
+      labels:
+        app: bookstack-mariadb
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:12.2.2
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MARIADB_ROOT_PASSWORD # Secret
+              valueFrom:
+                secretKeyRef:
+                  name: bookstack-secrets
+                  key: mariadb-root-password
+            # There can be a problem with kind/Kubernetes and mariadb not creating a new user at first start.
+            # If this is the case, it needs to be done manually.
+            # Use code from file 02_manual_create_db_and_user.sql.
+            - name: MARIADB_USER
+              value: bookstack-user
+            - name: DB_PASSWORD # Secret
+              valueFrom:
+                secretKeyRef:
+                  name: bookstack-secrets
+                  key: mariadb-user-password
+            # There can be a problem with kind/Kubernetes and mariadb not creating a new database at first start.
+            # If this is the case, it needs to be done manually.
+            # Use code from file 02_manual_create_db_and_user.sql.
+            - name: DB_DATABASE
+              value: bookstackdb
+          volumeMounts:
+            - name: bookstack-mariadb-data
+              mountPath: /var/lib/mysql # path inside container
+      volumes:
+        - name: bookstack-mariadb-data
+          persistentVolumeClaim:
+            claimName: bookstack-mariadb-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bookstack-mariadb
+  namespace: default
+spec:
+  selector:
+    app: bookstack-mariadb
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3306
+      targetPort: 3306 # should match containerPort in Deployment

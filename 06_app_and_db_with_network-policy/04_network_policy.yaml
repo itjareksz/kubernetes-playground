@@ -1,0 +1,25 @@
+# NetworkPolicies are additive, and they only have allow rules.
+
+# Allow specific pods to connect to the bookstack-mariadb database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-bookstack-to-mariadb
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: bookstack-mariadb
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: bookstack # allowed-app
+        - podSelector:
+            matchLabels:
+              name: ubuntu # allowed-pod
+      ports:
+        - protocol: TCP
+          port: 3306
